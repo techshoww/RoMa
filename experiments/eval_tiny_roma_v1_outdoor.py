@@ -3,9 +3,9 @@ import os
 from pathlib import Path
 import json
 from romatch.benchmarks import ScanNetBenchmark
-from romatch.benchmarks import Mega1500PoseLibBenchmark, ScanNetPoselibBenchmark
+from romatch.benchmarks import Mega1500PoseLibBenchmark#, ScanNetPoselibBenchmark
 from romatch.benchmarks import MegaDepthPoseEstimationBenchmark
-
+from train_ddp_tiny_roma_v1_outdoor import XFeatModel
 def test_mega_8_scenes(model, name):
     mega_8_scenes_benchmark = MegaDepthPoseEstimationBenchmark("data/megadepth",
                                                 scene_names=['mega_8_scenes_0019_0.1_0.3.npz',
@@ -78,7 +78,11 @@ if __name__ == "__main__":
 
     experiment_name = Path(__file__).stem
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = tiny_roma_v1_outdoor(device)
-    #test_mega1500_poselib(model, experiment_name)
-    test_mega_8_scenes_poselib(model, experiment_name)
+    # model = tiny_roma_v1_outdoor(device)
+
+    model = XFeatModel(freeze_xfeat=False, exact_softmax=False).to(device)
+    model.load_state_dict(torch.load("workspace/checkpoints-122016/train_ddp_tiny_roma_v1_outdoor2024352.pth", map_location=device)['model'])
+    model.eval()
+    test_mega1500_poselib(model, experiment_name)
+    # test_mega_8_scenes_poselib(model, experiment_name)
  

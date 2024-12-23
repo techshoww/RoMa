@@ -1,0 +1,2 @@
+export CUDA_VISIBLE_DEVICES="2"
+python experiments/eval_tiny_roma_v1_outdoor.py

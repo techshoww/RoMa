@@ -12,6 +12,69 @@ from PIL import Image
 from torchvision.transforms import ToTensor
 from romatch.utils.kde import kde
 
+def gather(input, idx):
+    N,H,W = idx.shape
+    _,C,_,_ = input.shape
+    idx = idx.view(N,1,H*W).expand(N,C,H*W).long()
+    input = input.view(N,C,-1)
+    output = torch.gather(input, 2, idx)
+    output = output.view(N,C,H,W)
+
+    return output
+
+def gather_bilinear(input, grid):
+    _,C,Hi,Wi = input.shape
+    N,H,W,_ = grid.shape
+
+    pad = (grid<-1)|(grid>1)
+    grid[pad] = 0
+
+    grid[..., 0] *= Wi/2
+    grid[..., 0] += Wi/2
+    grid[..., 1] *= Hi/2
+    grid[..., 1] += Hi/2
+
+    grid_x = grid[...,0]
+    grid_y = grid[...,1]
+
+    
+    grid_x0 = torch.floor(grid_x)
+    grid_x1 = grid_x0+1
+    
+
+    grid_y0 = torch.floor(grid_y)
+    grid_y1 = grid_y0+1
+
+    grid_x = torch.clamp(grid_x, min=0, max=Wi-1).long()
+    grid_y = torch.clamp(grid_y, min=0, max=Wi-1).long()
+    grid_x0 = torch.clamp(grid_x0, min=0, max=Wi-1).long()
+    grid_x1 = torch.clamp(grid_x1, min=0, max=Wi-1).long()
+    grid_y0 = torch.clamp(grid_y0, min=0, max=Hi-1).long()
+    grid_y1 = torch.clamp(grid_y1, min=0, max=Hi-1).long()
+
+    idx00 = grid_x0 + grid_y0*Wi        # N,H,W
+    idx01 = grid_x0 + grid_y1*Wi 
+    idx10 = grid_x1 + grid_y0*Wi 
+    idx11 = grid_x1 + grid_y1*Wi 
+    
+    out00 = gather(input, idx00)
+    out01 = gather(input, idx01)
+    out10 = gather(input, idx10)
+    out11 = gather(input, idx11)
+
+    w0 = (grid_x1 - grid_x).view(N,1,H,W)
+    w1 = (grid_x - grid_x0).view(N,1,H,W)
+
+    w2 = (grid_y1 - grid_y).view(N,1,H,W)
+    w3 = (grid_y - grid_y0).view(N,1,H,W)
+
+    value0 = w0*out00 + w1*out10
+    value1 = w0*out01 + w1*out11 
+
+    output = w2*value0 + w3*value1
+
+    return output
+
 class BasicLayer(nn.Module):
     """
         Basic Convolutional Layer: Conv2d -> BatchNorm -> ReLU
@@ -214,7 +277,7 @@ class TinyRoMa(nn.Module):
         corresps = self.forward({"im_A":im0, "im_B":im1})
         #return 1,1
         flow = F.interpolate(
-            corresps[4]["flow"], 
+            corresps[8]["flow"], 
             size = (H0, W0), 
             mode = "bilinear", align_corners = False).permute(0,2,3,1).reshape(B,H0,W0,2)
         grid = torch.stack(
@@ -224,7 +287,7 @@ class TinyRoMa(nn.Module):
                 indexing = "xy"), 
             dim = -1).float().to(flow.device).expand(B, H0, W0, 2)
         
-        certainty = F.interpolate(corresps[4]["certainty"], size = (H0,W0), mode = "bilinear", align_corners = False)
+        certainty = F.interpolate(corresps[8]["certainty"], size = (H0,W0), mode = "bilinear", align_corners = False)
         warp, cert = torch.cat((grid, flow), dim = -1), certainty[:,0].sigmoid()
         if batched:
             return warp, cert

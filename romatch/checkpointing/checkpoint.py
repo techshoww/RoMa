@@ -30,7 +30,7 @@ class CheckPoint:
                 "optimizer": optimizer.state_dict(),
                 "lr_scheduler": lr_scheduler.state_dict(),
             }
-            torch.save(states, self.dir + self.name + f"_latest.pth")
+            torch.save(states, self.dir + self.name + f"{n}.pth")
             logger.info(f"Saved states {list(states.keys())}, at step {n}")
     
     def load(

@@ -7,7 +7,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 import math
 import numpy as np
-
+import random 
 from torch import nn
 from torch.utils.data import ConcatDataset
 import torch.distributed as dist
@@ -17,6 +17,7 @@ import wandb
 from PIL import Image
 from torchvision.transforms import ToTensor
 import datetime
+from functools import partial
 from romatch.benchmarks import MegadepthDenseBenchmark, ScanNetBenchmark
 from romatch.benchmarks import Mega1500PoseLibBenchmark #, ScanNetPoselibBenchmark
 from romatch.datasets.megadepth import MegadepthBuilder
@@ -216,7 +217,8 @@ class XFeatModel(nn.Module):
             xfeat = self.xfeat[0]
             with torch.no_grad():
                 x = x.mean(dim=1, keepdim = True)
-                x = xfeat.norm(x)
+                # x = xfeat.norm(x)
+                # x = (x-x.mean())/x.std()
 
             #main backbone
             x1 = xfeat.block1(x)
@@ -428,8 +430,8 @@ class XFeatModel(nn.Module):
         coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
         corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
         return corresps
-        # # coarse_matches_up = F.interpolate(coarse_matches, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False)
-        # coarse_matches_up = self.upconv3(coarse_matches)
+        # coarse_matches_up = F.interpolate(coarse_matches, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False)
+        # # coarse_matches_up = self.upconv3(coarse_matches)
 
         # coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
         # feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_matches_up_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
@@ -505,11 +507,12 @@ class TinyRoMaExport(nn.Module):
         )
 
     def forward_single(self, x):
-        with torch.inference_mode( not self.training):
+        with torch.inference_mode(self.freeze_xfeat or not self.training):
             xfeat = self.xfeat[0]
             with torch.no_grad():
                 x = x.mean(dim=1, keepdim = True)
-                x = xfeat.norm(x)
+                # x = xfeat.norm(x)
+                # x = (x-x.mean())/x.std()
 
             #main backbone
             x1 = xfeat.block1(x)
@@ -632,24 +635,37 @@ class TinyRoMaExport(nn.Module):
         # coarse_matches_up = F.interpolate(coarse_matches, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False)        
         coarse_matches_up = self.upconv3(coarse_matches)
         coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
-        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_matches_up_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        # feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_matches_up_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
         # feats_x1_f_warped = bilinear_grid_sample(feats_x1_f, coarse_matches_up_detach.permute(0, 2, 3, 1)[...,:2])
-        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
-        # fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f, coarse_matches_up_detach[:,:2]), dim=1))
+        # fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
+        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f, coarse_matches_up_detach[:,:2]), dim=1))
         fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
         # corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
         # return corresps
         return fine_matches
 
+#   设置Dataloader的种子
+#---------------------------------------------------#
+def worker_init_fn(worker_id, num_workers, rank, seed):
+    # The seed of each worker equals to
+    # num_worker * rank + worker_id + user_seed
+    worker_seed = num_workers * rank + worker_id + seed
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 def train(args):
-    rank = 0
-    gpus = 1
+    dist.init_process_group('nccl')
+    
+    gpus = int(os.environ['WORLD_SIZE'])
+    rank = dist.get_rank()
+    print(f"Start running DDP on rank {rank}")
     print("torch.cuda.device_count()", torch.cuda.device_count())
     device_id = rank % torch.cuda.device_count()
-    romatch.LOCAL_RANK = 0
+    romatch.LOCAL_RANK = device_id
     torch.cuda.set_device(device_id)
-        
+    
+
     print("romatch.RANK",romatch.RANK)
     resolution = "big"
     # wandb_log = not args.dont_log_wandb
@@ -657,6 +673,7 @@ def train(args):
     experiment_name = Path(__file__).stem
     wandb_mode = "online" if wandb_log and rank == 0 else "disabled"
     wandb.init(project="romatch", entity=args.wandb_entity, name=experiment_name, reinit=False, mode = wandb_mode)
+
     # 获取当前时间的datetime对象
     current_time = datetime.datetime.now()
 
@@ -664,9 +681,8 @@ def train(args):
     formatted_time = current_time.strftime('%Y-%m-%d_%H:%M:%S')
 
     checkpoint_dir = f"workspace/checkpoints-{formatted_time}/"
-
     h,w = resolutions[resolution]
-    model = XFeatModel(freeze_xfeat = True).to(device_id)
+    model = XFeatModel(freeze_xfeat = False).to(device_id)
     # Num steps
     global_step = 0
     batch_size = args.gpu_batch_size
@@ -714,9 +730,12 @@ def train(args):
     checkpointer = CheckPoint(checkpoint_dir, experiment_name)
     model, optimizer, lr_scheduler, global_step = checkpointer.load(model, optimizer, lr_scheduler, global_step)
     romatch.GLOBAL_STEP = global_step
+    ddp_model = DDP(model, device_ids=[device_id], find_unused_parameters = True, gradient_as_bucket_view=True)
     grad_scaler = torch.cuda.amp.GradScaler(growth_interval=1_000_000)
     grad_clip_norm = 0.01
     #megadense_benchmark.benchmark(model)
+
+    seed=1234
     for n in range(romatch.GLOBAL_STEP, N, k * romatch.STEP_SIZE):
         mega_sampler = torch.utils.data.WeightedRandomSampler(
             mega_ws, num_samples = batch_size * k, replacement=False
@@ -727,12 +746,15 @@ def train(args):
                 batch_size = batch_size,
                 sampler = mega_sampler,
                 num_workers = 8,
+                worker_init_fn=partial(
+                    worker_init_fn, num_workers=8, rank=rank,
+                    seed=seed+n) 
             )
         )
         train_k_steps(
-            n, k, mega_dataloader, model, depth_loss, optimizer, lr_scheduler, grad_scaler, grad_clip_norm = grad_clip_norm,
+            n, k, mega_dataloader, ddp_model, depth_loss, optimizer, lr_scheduler, grad_scaler, grad_clip_norm = grad_clip_norm,
         )
-        checkpointer.save(model, optimizer, lr_scheduler, romatch.GLOBAL_STEP)
+        checkpointer.save(ddp_model, optimizer, lr_scheduler, romatch.GLOBAL_STEP)
         # wandb.log(mega1500_benchmark.benchmark(model, model_name=experiment_name), step = romatch.GLOBAL_STEP)
 
 def test_mega_8_scenes(model, name):
@@ -815,7 +837,6 @@ if __name__ == "__main__":
     romatch.DEBUG_MODE = args.debug_mode
     if not args.only_test:
         train(args)
-        print("training done")
 
     # experiment_name = "tiny_roma_v1_outdoor"#Path(__file__).stem
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

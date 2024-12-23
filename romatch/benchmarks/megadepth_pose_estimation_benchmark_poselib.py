@@ -57,17 +57,20 @@ class Mega1500PoseLibBenchmark:
                     T1_to_2 = np.concatenate((R,t[:,None]), axis=-1)
                     im_A_path = f"{data_root}/{im_paths[idx1]}"
                     im_B_path = f"{data_root}/{im_paths[idx2]}"
+
+                    im_A = Image.open(im_A_path)
+                    w1, h1 = im_A.size
+                    im_B = Image.open(im_B_path)
+                    w2, h2 = im_B.size
+                    im_B = im_B.resize((w1,h1))
                     dense_matches, dense_certainty = model.match(
-                        im_A_path, im_B_path, K1.copy(), K2.copy(), T1_to_2.copy()
+                        im_A, im_B, K1.copy(), K2.copy(), T1_to_2.copy()
                     )
                     sparse_matches,_ = model.sample(
                         dense_matches, dense_certainty, 5_000
                     )
                     
-                    im_A = Image.open(im_A_path)
-                    w1, h1 = im_A.size
-                    im_B = Image.open(im_B_path)
-                    w2, h2 = im_B.size
+                    
                     kpts1, kpts2 = model.to_pixel_coordinates(sparse_matches, h1, w1, h2, w2)
                     kpts1, kpts2 = kpts1.cpu().numpy(), kpts2.cpu().numpy()
                     for _ in range(self.num_ransac_iter):

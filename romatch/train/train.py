@@ -33,6 +33,8 @@ def train_step(train_batch, model, objective, optimizer, grad_scaler, grad_clip_
     wandb.log({"grad_scale": grad_scaler._scale.item()}, step = romatch.GLOBAL_STEP)
     if grad_scaler._scale < 1.:
         grad_scaler._scale = torch.tensor(1.).to(grad_scaler._scale)
+    if romatch.GLOBAL_STEP %  1000 == 0:
+        print("loss", l.item())
     romatch.GLOBAL_STEP = romatch.GLOBAL_STEP + romatch.STEP_SIZE # increment global step
     return {"train_out": out, "train_loss": l.item()}
 
