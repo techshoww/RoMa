@@ -5,7 +5,7 @@ import json
 from romatch.benchmarks import ScanNetBenchmark
 from romatch.benchmarks import Mega1500PoseLibBenchmark#, ScanNetPoselibBenchmark
 from romatch.benchmarks import MegaDepthPoseEstimationBenchmark
-from train_ddp_tiny_roma_v1_outdoor import XFeatModel
+from model_tiny import XFeatModel
 def test_mega_8_scenes(model, name):
     mega_8_scenes_benchmark = MegaDepthPoseEstimationBenchmark("data/megadepth",
                                                 scene_names=['mega_8_scenes_0019_0.1_0.3.npz',

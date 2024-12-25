@@ -11,7 +11,8 @@ class CheckPoint:
     def __init__(self, dir=None, name="tmp"):
         self.name = name
         self.dir = dir
-        os.makedirs(self.dir, exist_ok=True)
+        if romatch.RANK == 0:
+            os.makedirs(self.dir, exist_ok=True)
 
     def save(
         self,
