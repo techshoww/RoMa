@@ -9,7 +9,7 @@ import numpy as np
 
 # from model_tiny1 import  TinyRoMaExportH1 as TinyRoMaExport
 
-from model_tiny1 import  TinyRoMaExportH1 as TinyRoMaExport
+from model_tiny import  TinyRoMaExport as TinyRoMaExport
 
 from thop import profile,clever_format
 
@@ -113,10 +113,12 @@ if __name__ == "__main__":
 
     to_normalized = torch.tensor((2/width, 2/height, 1)).to(device)[None,:,None,None]
 
-    input = (x1,x2, gridx, gridy, to_normalized)
-    input_names=["x1","x2", "gridx", "gridy", "to_normalized"]
+    # input = (x1,x2, gridx, gridy, to_normalized)
+    # input_names=["x1","x2", "gridx", "gridy", "to_normalized"]
     # input = (x1,x2, grid, to_normalized)
     # input_names=["x1","x2", "grid", "to_normalized"]
+    input = (x1,x2,  to_normalized)
+    input_names=["x1","x2",  "to_normalized"]
 
     flops, params = profile(roma_model, input)
     flops, params = clever_format([flops, params], "%.3f")
@@ -126,7 +128,7 @@ if __name__ == "__main__":
     # traced_script_module = torch.jit.trace(roma_model, input)
     # traced_script_module.save(jit_path)
 
-    onnx_path = f"onnx/roma_tiny1_h_{height}x{width}.onnx"
+    onnx_path = f"onnx/roma_tiny_{height}x{width}.onnx"
     torch.onnx.export(roma_model, input, onnx_path, input_names=input_names, output_names=["fine_matches"], opset_version=16)
     onnx_model = onnx.load(onnx_path)
     onnx_model = infer_shapes(onnx_model)

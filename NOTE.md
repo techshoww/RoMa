@@ -4,11 +4,17 @@ auc: [np.float64(0.5608852384959422), np.float64(0.6909296757113073), np.float64
 
 * *官方tiny模型coarse matcher 点数：  
 auc: [np.float64(0.4578617203205827), np.float64(0.6065707390146635), np.float64(0.7231191687762)]
+* 官方tiny模型两次 coarse matcher点数：
+auc: [np.float64(0.4989505071357495), np.float64(0.6433383403826987), np.float64(0.7583219253280613)]
 
 * 重训点数：  
-workspace/checkpoints/train_tiny_roma_v1_outdoor1700000.pth 没训完
+workspace/checkpoints/train_tiny_roma_v1_outdoor1700000.pth 没训完  
 auc: [np.float64(0.5473199832926849), np.float64(0.6681362524330516), np.float64(0.7553055861474577)]
 
+一次coarse_matcher,去掉fine_matcher:  
+auc: [np.float64(0.42314709233726155), np.float64(0.5631720974958585), np.float64(0.67419617426277)]  
+两次coarse_matcher, 去掉fine_matcher：  
+auc: [np.float64(0.46695515459042297), np.float64(0.6047022850645939), np.float64(0.7129324203277456)]  
 
 * 重训模型 用gather替换了grid_sample后的点数：  
 0
@@ -27,6 +33,9 @@ auc: [np.float64(0.47861344339571293), np.float64(0.6220432028478029), np.float6
 
 比 xfeat-start multiscale=False 要好一些 https://alidocs.dingtalk.com/i/nodes/mExel2BLV54K0orGFevK3mN3Wgk9rpMq?utm_scene=person_space
 
+两次coarse matcher，无fine_matcher, pos_embed else 分支：
+auc: [np.float64(0.5068083661552063), np.float64(0.65264702810904), np.float64(0.7662746133712164)]
+
 * 重训模型，推理时使用 (x-x.mean())/x.std() 替换 InstanceNorm ：  
 auc: [np.float64(0.48071641011327254), np.float64(0.6284239135400445), np.float64(0.741859699514013)]
 https://blog.csdn.net/qq_36560894/article/details/115017087#
@@ -36,6 +45,9 @@ https://blog.csdn.net/qq_36560894/article/details/115017087#
 * 重训模型，推理时去掉InstanceNorm ：  
 掉点明显
 auc: [np.float64(0.379938404178043), np.float64(0.5192096908903073), np.float64(0.6462634641203484)]
+
+* 重训模型，backbone略微增大，两次coarse_matcher，去掉fine_matcher  
+workspace/checkpoints-2024-12-25_18:54:10  
 
 
 ## 解决InstanceNorm2d支持问题  
@@ -49,7 +61,7 @@ BN没有IN的编译问题，设置 batch size 为1，使用 BatchNorm2d 替换 I
 
 ## 模型编译：  
 
-默认NPU1模式  
+默认NPU1模式,`pos_embed`走`else`分支  
 
 * 输入尺寸为 320x160,包含InstanceNorm可以编译通过  
 
@@ -93,6 +105,9 @@ AssertionError: job io size > ocm size, AxQuantizedInstanceNorm
    5% =  73.879 ms   90% =  73.909 ms   95% =  73.915 ms     99% =  73.954 ms
  `corr_volume`和`pos_embed` 两个函数中内存操作较多  
 
+* 输入尺寸 640x320,用BN代替InstanceNorm, `pos_embed`走`if`分支  
+  
+
 * 輸入尺寸 640x320，用BN代替InstanceNorm，只在水平方向匹配  
   min =  13.120 ms   max =  13.165 ms   avg =  13.125 ms  median =  13.124 ms
    5% =  13.122 ms   90% =  13.126 ms   95% =  13.128 ms     99% =  13.133 ms
@@ -110,6 +125,17 @@ AssertionError: job io size > ocm size, AxQuantizedInstanceNorm
    5% =  21.196 ms   90% =  21.204 ms   95% =  21.205 ms     99% =  21.224 ms
   coarse_matcher 大概跑 8 ms
 
+* 輸入尺寸 640x320，增大了backbone,用BN代替InstanceNorm 跑两次coarse matcher, 垂直方向的匹配半径为4(feature上的尺寸，对应原图为4*8)  
+  min =  30.276 ms   max =  30.374 ms   avg =  30.284 ms  median =  30.284 ms
+   5% =  30.278 ms   90% =  30.288 ms   95% =  30.289 ms     99% =  30.309 ms
+
+### 编译报错  
+* `pos_embed` 函数 `if` 分支，编译不过   
+https://jira.aixin-chip.com/browse/AXSTITCH-30  
+解决方法： 
+1. 走`else`分支。`else`分支的缺点是计算量比较大。  
+2. 交换 `permute`和`mul`的顺序，编译报错 https://jira.aixin-chip.com/browse/AXSTITCH-31 `yamain.common.error.CodeException: (<ErrorCode.NPUBackendError: 8>, Exception('Deadlock!'))`     
+
 ## 推理速度优化  
 通过编译时的trace log 发现，`corr_volume`和`pos_embed`耗时较多。  
 优化思路：  
@@ -117,7 +143,9 @@ AssertionError: job io size > ocm size, AxQuantizedInstanceNorm
 在 640x320尺寸上提速6倍  
 * TODO 垂直方向上只做小范围的匹配，水平方向也只做一定范围内的匹配    
 
+## 精度优化  
 
+* 在无fine matcher的前提下，跑两次coarse macher，auc@5 能提高3、4个点
 
 ## BN和IN的等价条件  
 https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html  

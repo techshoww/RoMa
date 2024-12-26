@@ -423,6 +423,12 @@ class TinyRoma(nn.Module):
         feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
         coarse_matches_delta = self.coarse_matcher(torch.cat((feats_x0_c, feats_x1_c_warped, coarse_warp), dim=1))
         coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
+
+        coarse_matches_detach = coarse_matches.detach()
+        feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        coarse_matches_delta = self.coarse_matcher(torch.cat((feats_x0_c, feats_x1_c_warped, coarse_matches_detach[:,:2]), dim=1))
+        coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
+
         corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
         return corresps
         # coarse_matches_up = F.interpolate(coarse_matches, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False)
@@ -553,32 +559,32 @@ class TinyRoMaExport(nn.Module):
         corr_volume = torch.matmul(feat1, feat0).reshape(B, H1, W1, H0 , W0)/math.sqrt(C)  # bjc matmul bci -> bji
         return corr_volume
     
-    def pos_embed(self, corr_volume, grid):
+    def pos_embed(self, corr_volume):
         B, H1, W1, H0, W0 = corr_volume.shape 
         print("corr_volume",corr_volume.shape)
-        # grid = torch.stack(
-        #         torch.meshgrid(
-        #             torch.linspace(-1+1/W1,1-1/W1, W1), 
-        #             torch.linspace(-1+1/H1,1-1/H1, H1), 
-        #             indexing = "xy"), 
-        #         dim = -1).float().to(corr_volume).reshape(H1*W1, 2)
+        grid = torch.stack(
+                torch.meshgrid(
+                    torch.linspace(-1+1/W1,1-1/W1, W1), 
+                    torch.linspace(-1+1/H1,1-1/H1, H1), 
+                    indexing = "xy"), 
+                dim = -1).float().to(corr_volume).reshape(H1*W1, 2)
 
         down = 4
         # if not self.training and not self.exact_softmax:
-        if False:
-            # grid_lr = torch.stack(
-            #     torch.meshgrid(
-            #         torch.linspace(-1+down/W1,1-down/W1, W1//down), 
-            #         torch.linspace(-1+down/H1,1-down/H1, H1//down), 
-            #         indexing = "xy"), 
-            #     dim = -1).float().to(corr_volume).reshape(H1*W1 //down**2, 2)
+        if True:
+            grid_lr = torch.stack(
+                torch.meshgrid(
+                    torch.linspace(-1+down/W1,1-down/W1, W1//down), 
+                    torch.linspace(-1+down/H1,1-down/H1, H1//down), 
+                    indexing = "xy"), 
+                dim = -1).float().to(corr_volume).reshape(H1*W1 //down**2, 2)
             cv = corr_volume
             best_match = cv.reshape(B,H1*W1,H0,W0).argmax(dim=1) # B, HW, H, W
             cv_ = cv.reshape(B,H1*W1,H0,W0)
             print("best_match[:,None]",best_match[:,None].shape)
             # torch.save(best_match, "best_match.pth")
             # print("cv[best_match[:,None]]",cv[best_match[:,None]].shape)
-            P_lowres = torch.cat((cv[:,::down,::down].reshape(B,H1*W1 // down**2,H0,W0), torch.zeros_like(best_match[:,None])),dim=1).softmax(dim=1)
+            P_lowres = torch.cat((cv[:,::down,::down].reshape(B,H1*W1 // down**2,H0,W0), best_match[:,None]),dim=1).softmax(dim=1)
             # pos_embeddings = torch.einsum('bchw,cd->bdhw', P_lowres[:,:-1], grid_lr)
 
             # a = P_lowres[:,:-1]   # bchw 
@@ -586,9 +592,11 @@ class TinyRoMaExport(nn.Module):
             a = P_lowres.permute(0,2,3,1)[..., :-1]
             pos_embeddings = torch.matmul(a, grid_lr)   # bhwc matmul cd -> bhwd
             pos_embeddings = pos_embeddings.permute(0,3,1,2)
-            print("grid[best_match]",grid[best_match].shape)
-            print("P_lowres[:,-1]",P_lowres[:,-1].shape)
-            tmp = P_lowres[:,-1] * grid[best_match].permute(0,3,1,2)
+            print("grid[best_match]",grid[best_match].shape)            # torch.Size([1, 80, 40, 2])
+            print("P_lowres[:,-1]",P_lowres[:,-1].shape)                # torch.Size([1, 80, 40])
+            # tmp = P_lowres[:,-1] * grid[best_match].permute(0,3,1,2)    # torch.Size([1, 2, 80, 40])
+            tmp = (P_lowres[:,-1].view(B,H0,W0,1)* grid[best_match]).permute(0,3,1,2)
+
             print("tmp",tmp.shape)
             pos_embeddings += tmp
             #print("hej")
@@ -606,7 +614,7 @@ class TinyRoMaExport(nn.Module):
             pos_embeddings = pos_embeddings.permute(0,3,1,2)
         return pos_embeddings
     
-    def forward(self, im0, im1, grid, to_normalized):
+    def forward(self, im0, im1,  to_normalized):
         """
             input:
                 x -> torch.Tensor(B, C, H, W) grayscale or rgb images
@@ -622,7 +630,7 @@ class TinyRoMaExport(nn.Module):
         
         corr_volume = self.corr_volume(feats_x0_c, feats_x1_c)
         
-        coarse_warp = self.pos_embed(corr_volume, grid)
+        coarse_warp = self.pos_embed(corr_volume)
         
         coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
         
