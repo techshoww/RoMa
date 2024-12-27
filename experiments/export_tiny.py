@@ -9,7 +9,7 @@ import numpy as np
 
 # from model_tiny1 import  TinyRoMaExportH1 as TinyRoMaExport
 
-from model_tiny import  TinyRoMaExport as TinyRoMaExport
+from model_tiny2 import   TinyRoma
 
 from thop import profile,clever_format
 
@@ -78,10 +78,12 @@ if __name__ == "__main__":
 
     # Create model
     # roma_model = tiny_roma_v1_outdoor_export(device=device)
-    roma_model = TinyRoMaExport(freeze_xfeat=False, exact_softmax=False).to(device)
+    roma_model = TinyRoma(freeze_xfeat=False, exact_softmax=False).to(device)
     # ckpt = "workspace/checkpoints-122016/train_ddp_tiny_roma_v1_outdoor2024352.pth"
     # roma_model.load_state_dict(torch.load(ckpt, map_location=device)['model'],strict=False)
     roma_model.eval()
+
+    roma_model.forward = roma_model.forward_export
 
     height = 640
     width = 320
@@ -90,35 +92,35 @@ if __name__ == "__main__":
     x2 = torch.rand((1,3,height,width)).to(device)
 
     
-    H1 = height//8
-    W1 = width//8
-    H0 = H1 
-    W0 = W1
-    down = 4
-    grid = torch.stack(
-                torch.meshgrid(
-                    torch.linspace(-1+1/W1,1-1/W1, W1), 
-                    torch.linspace(-1+1/H1,1-1/H1, H1), 
-                    indexing = "xy"), 
-                dim = -1).float().reshape(H1*W1, 2).to(device)
+    # H1 = height//8
+    # W1 = width//8
+    # H0 = H1 
+    # W0 = W1
+    # down = 4
+    # grid = torch.stack(
+    #             torch.meshgrid(
+    #                 torch.linspace(-1+1/W1,1-1/W1, W1), 
+    #                 torch.linspace(-1+1/H1,1-1/H1, H1), 
+    #                 indexing = "xy"), 
+    #             dim = -1).float().reshape(H1*W1, 2).to(device)
 
-    gridx = torch.linspace(-1+1/W1,1-1/W1, W1).float().to(device)
-    gridy = torch.stack(
-            torch.meshgrid(
-                torch.linspace(-1+1/W0,1-1/W0, W0), 
-                torch.linspace(-1+1/H1,1-1/H1, H1), 
-                indexing = "xy"), 
-            dim = -1).float().to(device).reshape(H1*W0, 2)[:,1]
-    print("gridy",gridy.shape)
+    # gridx = torch.linspace(-1+1/W1,1-1/W1, W1).float().to(device)
+    # gridy = torch.stack(
+    #         torch.meshgrid(
+    #             torch.linspace(-1+1/W0,1-1/W0, W0), 
+    #             torch.linspace(-1+1/H1,1-1/H1, H1), 
+    #             indexing = "xy"), 
+    #         dim = -1).float().to(device).reshape(H1*W0, 2)[:,1]
+    # print("gridy",gridy.shape)
 
-    to_normalized = torch.tensor((2/width, 2/height, 1)).to(device)[None,:,None,None]
+    # to_normalized = torch.tensor((2/width, 2/height, 1)).to(device)[None,:,None,None]
 
     # input = (x1,x2, gridx, gridy, to_normalized)
     # input_names=["x1","x2", "gridx", "gridy", "to_normalized"]
     # input = (x1,x2, grid, to_normalized)
     # input_names=["x1","x2", "grid", "to_normalized"]
-    input = (x1,x2,  to_normalized)
-    input_names=["x1","x2",  "to_normalized"]
+    input = (x1,x2)
+    input_names=["x1","x2"]
 
     flops, params = profile(roma_model, input)
     flops, params = clever_format([flops, params], "%.3f")
@@ -128,7 +130,7 @@ if __name__ == "__main__":
     # traced_script_module = torch.jit.trace(roma_model, input)
     # traced_script_module.save(jit_path)
 
-    onnx_path = f"onnx/roma_tiny_{height}x{width}.onnx"
+    onnx_path = f"onnx/roma_tiny2_{height}x{width}.onnx"
     torch.onnx.export(roma_model, input, onnx_path, input_names=input_names, output_names=["fine_matches"], opset_version=16)
     onnx_model = onnx.load(onnx_path)
     onnx_model = infer_shapes(onnx_model)

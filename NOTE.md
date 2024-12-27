@@ -48,7 +48,7 @@ auc: [np.float64(0.379938404178043), np.float64(0.5192096908903073), np.float64(
 
 * 重训模型，backbone略微增大，两次coarse_matcher，去掉fine_matcher  
 workspace/checkpoints-2024-12-25_18:54:10  
-
+ auc: [np.float64(0.2236382029657451), np.float64(0.3642851425007732), np.float64(0.5144927317795498)]
 
 ## 解决InstanceNorm2d支持问题  
 * 使用 `(x-x.mean())/x.std()`替代  
