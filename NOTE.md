@@ -136,11 +136,39 @@ https://jira.aixin-chip.com/browse/AXSTITCH-30
 1. 走`else`分支。`else`分支的缺点是计算量比较大。  
 2. 交换 `permute`和`mul`的顺序，编译报错 https://jira.aixin-chip.com/browse/AXSTITCH-31 `yamain.common.error.CodeException: (<ErrorCode.NPUBackendError: 8>, Exception('Deadlock!'))`     
 
+### fine_matcher 编译  
+fine_matcher 输入分四份：    
+  min =  25.464 ms   max =  25.499 ms   avg =  25.473 ms  median =  25.473 ms  
+   5% =  25.467 ms   90% =  25.477 ms   95% =  25.479 ms     99% =  25.484 ms  
+  
+fine_matcher 输入宽高各缩小一半：  
+min =  20.890 ms   max =  20.925 ms   avg =  20.897 ms  median =  20.897 ms  
+  5% =  20.893 ms   90% =  20.901 ms   95% =  20.902 ms     99% =  20.906 ms  
+
+fine_matcher不做修改，input size改为 448x192:
+min =   7.268 ms   max =   7.311 ms   avg =   7.273 ms  median =   7.273 ms
+   5% =   7.270 ms   90% =   7.274 ms   95% =   7.275 ms     99% =   7.279 ms
+
+fine_matcher 输入 feat1 缩小一半做grid_sample，把结果放大输入fine_matcher:  
+workspace/checkpoints-2024-12-30_18:54:08  
+min =  20.954 ms   max =  21.179 ms   avg =  20.963 ms  median =  20.963 ms
+   5% =  20.956 ms   90% =  20.965 ms   95% =  20.969 ms     99% =  20.994 ms  
+
 ## 推理速度优化  
 通过编译时的trace log 发现，`corr_volume`和`pos_embed`耗时较多。  
 优化思路：  
 * 假设垂直方向上的像素差为0，只做水平方向的匹配  
 在 640x320尺寸上提速6倍  
+* 水平方向全匹配，垂直方向做小范围匹配（下采样 8 倍的feature map上的匹配半径为 4 ）：  
+  fine_matcher 输入分四份：  
+  min =  25.464 ms   max =  25.499 ms   avg =  25.473 ms  median =  25.473 ms  
+   5% =  25.467 ms   90% =  25.477 ms   95% =  25.479 ms     99% =  25.484 ms  
+  
+  fine_matcher 输入宽高各缩小一半：  
+  min =  20.890 ms   max =  20.925 ms   avg =  20.897 ms  median =  20.897 ms  
+   5% =  20.893 ms   90% =  20.901 ms   95% =  20.902 ms     99% =  20.906 ms  
+
+ 
 * TODO 垂直方向上只做小范围的匹配，水平方向也只做一定范围内的匹配    
 
 ## 精度优化  

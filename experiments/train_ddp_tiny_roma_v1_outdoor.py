@@ -25,7 +25,7 @@ from romatch.losses.robust_loss_tiny_roma import RobustLosses
 from romatch.benchmarks import MegaDepthPoseEstimationBenchmark, MegadepthDenseBenchmark, HpatchesHomogBenchmark
 from romatch.train.train import train_k_steps
 from romatch.checkpointing import CheckPoint
-from model_tiny1 import TinyRoma, TinyRoMaExport
+from model_tiny2 import TinyRoma
 
 resolutions = {"low":(448, 448), "medium":(14*8*5, 14*8*5), "high":(14*8*6, 14*8*6), "xfeat": (600,800), "big": (768, 1024)}
 

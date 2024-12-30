@@ -101,7 +101,16 @@ class TinyRoma(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        # self.norm = nn.BatchNorm2d(1)
+        self.upconv4 = nn.Sequential(
+            nn.ConvTranspose2d(24, 24, kernel_size=2, stride=2, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(24, 24, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+
+        self.norm = nn.BatchNorm2d(1)
+
+        self.avgpool = nn.AvgPool2d(3, 2, padding=1)
     @property
     def device(self):
         return self.fine_matcher[-1].weight.device
@@ -122,6 +131,7 @@ class TinyRoma(nn.Module):
                 x = x.mean(dim=1, keepdim = True)
                 # x = xfeat.norm(x)
                 # x = (x-x.mean())/x.std()
+                x = self.norm(x)
                 
 
             #main backbone
@@ -349,11 +359,29 @@ class TinyRoma(nn.Module):
         coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
         corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
 
-        coarse_matches_up = F.interpolate(coarse_matches, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False)        
+        # coarse_matches_up = F.interpolate(coarse_matches, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False)        
+        # coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
+        # feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_matches_up_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        # fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
+        # fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
+        # corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
+
+        
+
+        feats_x1_f = self.avgpool(feats_x1_f)
+        N,C,H,W = feats_x1_f.shape
+        feats_x1_f = torch.cat([feats_x1_f, feats_x1_f, feats_x1_f],1)[:,0:64]
+
+        coarse_detach = coarse_matches.detach()
+        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        feats_x1_f_warped = feats_x1_f_warped[:,0:24]
+        feats_x1_f_warped = self.upconv4(feats_x1_f_warped)
+
+        coarse_matches_up = self.upconv3(coarse_matches)
         coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
-        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_matches_up_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
         fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
         fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
+
         corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
         return corresps
         
@@ -388,8 +416,38 @@ class TinyRoma(nn.Module):
         
         return corr_volume
 
+    # def pos_embed_export(self, corr_volume):
+    #     r = self.radius
+    #     B,H0,two_r_W1,W0 = corr_volume.shape
+    #     W1 = two_r_W1//(2*r)
+
+    #     H = 2*r
+    #     grid = torch.stack(
+    #             torch.meshgrid(
+    #                 torch.linspace(-1+1/W1,1-1/W1, W1), 
+    #                 torch.linspace(-r/H0+1/H0,r/H0-1/H0, H), 
+    #                 indexing = "xy"), 
+    #             dim = -1).float().to(corr_volume).reshape(two_r_W1, 2)
+
+    #     gridy = torch.stack(
+    #         torch.meshgrid(
+    #             torch.linspace(-1+1/W0,1-1/W0, W0), 
+    #             torch.linspace(-1+1/H0,1-1/H0, H0), 
+    #             indexing = "xy"), 
+    #         dim = -1).float().to(corr_volume).reshape(1,H0,W0, 2)[:,:,:,1:2]
+
+    #     P = corr_volume.softmax(dim=2)
+    #     P = P.permute(0,1,3,2)              # B,H0,W0,two_r_W1
+    #     a = grid[:,0]
+    #     b = grid[:,1]
+    #     p0 = torch.sum(P*a, -1, keepdim=True)
+    #     p1 = torch.sum(P*b, -1, keepdim=True) + gridy
+    #     pos_embeddings = torch.cat((p0,p1), -1)
+    #     pos_embeddings = pos_embeddings.permute(0,3,1,2)
+    #     return pos_embeddings
+        
     def pos_embed_export(self, corr_volume):
-        r = self.radius
+        r = 4
         B,H0,two_r_W1,W0 = corr_volume.shape
         W1 = two_r_W1//(2*r)
 
@@ -403,34 +461,35 @@ class TinyRoma(nn.Module):
 
         gridy = torch.stack(
             torch.meshgrid(
-                torch.linspace(-1+1/W0,1-1/W0, W0), 
+                torch.linspace(0,0, W0), 
                 torch.linspace(-1+1/H0,1-1/H0, H0), 
                 indexing = "xy"), 
-            dim = -1).float().to(corr_volume).reshape(1,H0,W0, 2)[:,:,:,1:2]
+            dim = -1).float().to(corr_volume).reshape(1,H0,W0, 2)
 
-        P = corr_volume.softmax(dim=2)
+        # best_match = corr_volume.argmax(dim=2,keepdim=False) # B,H0,W0
+        # pos_embeddings = grid[best_match]
+
+        # P = corr_volume.softmax(dim=2)
+        # P = P.permute(0,1,3,2)              # B,H0,W0,two_r_W1
+        # a = grid[:,0]
+        # b = grid[:,1]
+        # p0 = torch.sum(P*a, -1, keepdim=True)
+        # p1 = torch.sum(P*b, -1, keepdim=True) 
+        # pos_embeddings = torch.cat((p0,p1), -1)
+        
+        P = (corr_volume == corr_volume.max(dim=2, keepdim=True)[0]).to(dtype=torch.float32)
         P = P.permute(0,1,3,2)              # B,H0,W0,two_r_W1
-        a = grid[:,0]
-        b = grid[:,1]
-        p0 = torch.sum(P*a, -1, keepdim=True)
-        p1 = torch.sum(P*b, -1, keepdim=True) + gridy
-        pos_embeddings = torch.cat((p0,p1), -1)
+        # a = grid[:,0]
+        # b = grid[:,1]
+        # p0 = torch.sum(P*a, -1, keepdim=True)
+        # p1 = torch.sum(P*b, -1, keepdim=True) 
+        # pos_embeddings = torch.cat((p0,p1), -1)
+        pos_embeddings = torch.matmul(P, grid)
+
+
+        pos_embeddings += gridy
         pos_embeddings = pos_embeddings.permute(0,3,1,2)
         return pos_embeddings
-
-    def forward_x2(self, x):
-        with torch.inference_mode(self.freeze_xfeat or not self.training):
-            xfeat = self.xfeat[0]
-            with torch.no_grad():
-                x = x.mean(dim=1, keepdim = True)
-                # x = xfeat.norm(x)
-                # x = (x-x.mean())/x.std()
-                
-
-            #main backbone
-            x1 = xfeat.block1(x)
-            x2 = xfeat.block2(x1 + xfeat.skip1(x))
-        return x2
 
     @torch.inference_mode()
     def forward_fine_matcher(self, feat0, feat1, warp, to_normalized):
@@ -455,10 +514,16 @@ class TinyRoma(nn.Module):
         B, C, H1, W1 = im1.shape
         to_normalized = torch.tensor((2/W1, 2/H1, 1)).to(im0.device)[None,:,None,None]
         
-        feats_x0_f, feats_x0_c = self.forward_single(im0)
-        feats_x1_f, feats_x1_c = self.forward_single(im1)
-        
-        
+
+        # if im0.shape[-2:] == im1.shape[-2:]:
+        if False:
+            x = torch.cat([im0, im1], dim=0)
+            x = self.forward_single(x)
+            feats_x0_c, feats_x1_c = x[1].chunk(2)
+            feats_x0_f, feats_x1_f = x[0].chunk(2)
+        else:
+            feats_x0_f, feats_x0_c = self.forward_single(im0)
+            feats_x1_f, feats_x1_c = self.forward_single(im1)
 
         corr_volume = self.corr_volume_export(feats_x0_c, feats_x1_c)
         
@@ -467,38 +532,27 @@ class TinyRoma(nn.Module):
         coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
         
         feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        print("feats_x0_c",feats_x0_c.shape)
+        print("feats_x1_c_warped",feats_x1_c_warped.shape)
         coarse_matches_delta = self.coarse_matcher(torch.cat((feats_x0_c, feats_x1_c_warped, coarse_warp), dim=1))
         coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
-        corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
+        # corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
                 
-        coarse_matches_up = self.upconv3(coarse_matches)
-
-        coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
+        
+        feats_x1_f = self.avgpool(feats_x1_f)       # down sample
         N,C,H,W = feats_x1_f.shape
-        feats_x1_f = torch.cat([feats_x1_f, feats_x1_f, feats_x1_f],1)
-        
-    
-        # 0:H//2,0:W//2
-        fine_matches0 = self.forward_fine_matcher(feats_x0_f[:,:,0:H//2,0:W//2], feats_x1_f[:,0:64, 0:H//2,0:W//2], coarse_matches_up_detach[:,:,0:H//2,0:W//2], to_normalized)
+        feats_x1_f = torch.cat([feats_x1_f, feats_x1_f, feats_x1_f],1)[:,0:64]
 
+        coarse_detach = coarse_matches.detach()
+        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        feats_x1_f_warped = feats_x1_f_warped[:,0:24]
+        feats_x1_f_warped = self.upconv4(feats_x1_f_warped)
 
-        # 0:H//2, W//2:W
-        
-        fine_matches1 = self.forward_fine_matcher(feats_x0_f[:,:,0:H//2, W//2:W], feats_x1_f[:,0:64, 0:H//2, W//2:W], coarse_matches_up_detach[:,:,0:H//2, W//2:W], to_normalized)
+        coarse_matches_up = self.upconv3(coarse_matches)
+        coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
+        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
+        fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
 
-        # H//2:H, 0:W//2
-        fine_matches2 = self.forward_fine_matcher(feats_x0_f[:,:,H//2:H, 0:W//2], feats_x1_f[:,0:64, H//2:H, 0:W//2], coarse_matches_up_detach[:,:,H//2:H, 0:W//2], to_normalized)
-
-
-        # H//2:H, W//2:W
-        fine_matches3 = self.forward_fine_matcher(feats_x0_f[:,:,H//2:H, W//2:W], feats_x1_f[:,0:64, H//2:H, W//2:W], coarse_matches_up_detach[:,:,H//2:H, W//2:W], to_normalized)
-
-
-        fine_matches01 = torch.cat([fine_matches0, fine_matches1], 3)
-        fine_matches23 = torch.cat([fine_matches2, fine_matches3], 3)
-
-        fine_matches = torch.cat([fine_matches01, fine_matches23], 2)
-
-        corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
+        # corresps[8] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
 
         return fine_matches
