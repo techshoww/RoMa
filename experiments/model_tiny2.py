@@ -281,7 +281,7 @@ class TinyRoma(nn.Module):
         corresps = self.forward({"im_A":im0, "im_B":im1})
         #return 1,1
         flow = F.interpolate(
-            corresps[8]["flow"], 
+            corresps[4]["flow"], 
             size = (H0, W0), 
             mode = "bilinear", align_corners = False).permute(0,2,3,1).reshape(B,H0,W0,2)
         grid = torch.stack(
@@ -291,7 +291,7 @@ class TinyRoma(nn.Module):
                 indexing = "xy"), 
             dim = -1).float().to(flow.device).expand(B, H0, W0, 2)
         
-        certainty = F.interpolate(corresps[8]["certainty"], size = (H0,W0), mode = "bilinear", align_corners = False)
+        certainty = F.interpolate(corresps[4]["certainty"], size = (H0,W0), mode = "bilinear", align_corners = False)
         warp, cert = torch.cat((grid, flow), dim = -1), certainty[:,0].sigmoid()
         if batched:
             return warp, cert
@@ -416,38 +416,8 @@ class TinyRoma(nn.Module):
         
         return corr_volume
 
-    # def pos_embed_export(self, corr_volume):
-    #     r = self.radius
-    #     B,H0,two_r_W1,W0 = corr_volume.shape
-    #     W1 = two_r_W1//(2*r)
-
-    #     H = 2*r
-    #     grid = torch.stack(
-    #             torch.meshgrid(
-    #                 torch.linspace(-1+1/W1,1-1/W1, W1), 
-    #                 torch.linspace(-r/H0+1/H0,r/H0-1/H0, H), 
-    #                 indexing = "xy"), 
-    #             dim = -1).float().to(corr_volume).reshape(two_r_W1, 2)
-
-    #     gridy = torch.stack(
-    #         torch.meshgrid(
-    #             torch.linspace(-1+1/W0,1-1/W0, W0), 
-    #             torch.linspace(-1+1/H0,1-1/H0, H0), 
-    #             indexing = "xy"), 
-    #         dim = -1).float().to(corr_volume).reshape(1,H0,W0, 2)[:,:,:,1:2]
-
-    #     P = corr_volume.softmax(dim=2)
-    #     P = P.permute(0,1,3,2)              # B,H0,W0,two_r_W1
-    #     a = grid[:,0]
-    #     b = grid[:,1]
-    #     p0 = torch.sum(P*a, -1, keepdim=True)
-    #     p1 = torch.sum(P*b, -1, keepdim=True) + gridy
-    #     pos_embeddings = torch.cat((p0,p1), -1)
-    #     pos_embeddings = pos_embeddings.permute(0,3,1,2)
-    #     return pos_embeddings
-        
     def pos_embed_export(self, corr_volume):
-        r = 4
+        r = self.radius
         B,H0,two_r_W1,W0 = corr_volume.shape
         W1 = two_r_W1//(2*r)
 
@@ -491,6 +461,133 @@ class TinyRoma(nn.Module):
         pos_embeddings = pos_embeddings.permute(0,3,1,2)
         return pos_embeddings
 
+    def corr_volume_exportH(self, feat0, feat1):
+        """
+            input:
+                feat0 -> torch.Tensor(B, C, H, W)
+                feat1 -> torch.Tensor(B, C, H, W)
+            return:
+                corr_volume -> torch.Tensor(B, H, W, H, W)
+        """
+        B, C, H0, W0 = feat0.shape
+        B, C, H1, W1 = feat1.shape
+        
+        # feat0 = feat0.view(B, C, H0*W0)
+        # feat1 = feat1.view(B, C, H1*W1)
+        # corr_volume = torch.einsum('bci,bcj->bji', feat0, feat1).reshape(B, H1, W1, H0 , W0)/math.sqrt(C) #16*16*16
+
+        assert H0==H1
+        feat0 = feat0.permute(0,2,1,3).view(B*H0, C, W0)      # B,H,C,W
+        feat1 = feat1.permute(0,2,1,3).view(B*H1, C, W1)
+
+        # corr_volume = torch.einsum('bci,bcj->bji', feat0, feat1).reshape(B, H1, W1, W0)/math.sqrt(C) 
+        feat1 = feat1.permute(0,2,1)
+        corr_volume = torch.matmul(feat1, feat0).reshape(B, H1, W1, W0)/math.sqrt(C) 
+        return corr_volume
+
+    def pos_embed_exportH(self, corr_volume: torch.Tensor):
+        # B, H1, W1, H0, W0 = corr_volume.shape 
+        B,H1,W1,W0 = corr_volume.shape 
+        
+        gridx = torch.linspace(-1+1/W1,1-1/W1, W1).float().to(corr_volume).reshape(W1,1)
+
+        gridy = torch.stack(
+            torch.meshgrid(
+                torch.linspace(-1+1/W0,1-1/W0, W0), 
+                torch.linspace(-1+1/H1,1-1/H1, H1), 
+                indexing = "xy"), 
+            dim = -1).float().to(corr_volume).reshape(H1*W0, 2)[:,1]
+        down = 4
+        # if not self.training and not self.exact_softmax:
+        if False:
+            grid_lr = torch.stack(
+                torch.meshgrid(
+                    torch.linspace(-1+down/W1,1-down/W1, W1//down), 
+                    torch.linspace(-1+down/H1,1-down/H1, H1//down), 
+                    indexing = "xy"), 
+                dim = -1).float().to(corr_volume).reshape(H1*W1 //down**2, 2)
+            cv = corr_volume
+            # https://github.com/Parskatt/RoMa/issues/52
+            best_match = cv.reshape(B,H1*W1,H0,W0).argmax(dim=1) # B, HW, H, W
+            P_lowres = torch.cat((cv[:,::down,::down].reshape(B,H1*W1 // down**2,H0,W0), best_match[:,None]),dim=1).softmax(dim=1)
+            pos_embeddings = torch.einsum('bchw,cd->bdhw', P_lowres[:,:-1], grid_lr)
+            pos_embeddings += P_lowres[:,-1] * grid[best_match].permute(0,3,1,2)
+            #print("hej")
+        else:
+            # P = corr_volume.reshape(B,H1*W1,H0,W0).softmax(dim=1) # B, HW, H, W
+            # pos_embeddings = torch.einsum('bchw,cd->bdhw', P, grid)
+
+            # corr_volume  # B, H1, W1, W0
+            P = corr_volume.reshape(B*H1,W1,W0).softmax(dim=1)   # B*H1, W1, W0
+            # pos_embeddings = torch.einsum('bij,id->bdj', P, gridx) # B*H1, 1, W0
+            # pos_embeddings = pos_embeddings.view(B,H1,1,W0).permute(0,2,1,3)    # B,1,H1,W0
+
+            gridx = gridx.view(1,W1,1)
+            pos_embeddings = torch.sum(P*gridx, 1, keepdim=False)   # B*H1, W0
+            pos_embeddings = pos_embeddings.view(B,H1,W0).unsqueeze(1)  # B,1,H1,W0
+
+            
+            # gridy = grid[:,1]
+            gridy = gridy.view(1,1,H1,W0).expand(B,1,H1,W0)
+            pos_embeddings = torch.cat([pos_embeddings, gridy], 1)
+        return pos_embeddings
+
+    # def corr_volume_export1(self, feat0, feat1):
+    #     """
+    #     input:
+    #         feat0 -> torch.Tensor(B, C, H, W)
+    #         feat1 -> torch.Tensor(B, C, H, W)
+    #     return:
+    #         corr_volume -> torch.Tensor(B, H, W, H, W)
+    #     """
+    #     B, C, H0, W0 = feat0.shape
+    #     B, C, H1, W1 = feat1.shape
+
+    #     assert H0==H1 and W0==W1
+    #     rh = self.radius_h 
+    #     rw = self.radius_w
+        
+    #     feat1 = F.pad(feat1, (rw,rw,rh,rh), "constant", 0)
+
+    #     offsety, offsetx = torch.meshgrid([torch.arange(0, 2 * rh + 1),
+    #                                        torch.arange(0, 2 * rw + 1)])      # tow many concat ops , can not build
+        
+    #     corr_volume = torch.cat([
+    #         torch.sum(feat0 * feat1[:, :, dy:dy+H1, dx:dx+W1], 1, keepdim=True)
+    #         for dx, dy in zip(offsetx.reshape(-1), offsety.reshape(-1))
+    #     ], 1)
+
+    #     corr_volume = corr_volume.reshape(B,2*rh+1, 2*rw+1, H0,W0)
+    #     return corr_volume
+
+    # def pos_embed_export1(self, corr_volume):
+    #     rh = self.radius_h 
+    #     rw = self.radius_w
+
+    #     B, two_rh_1, two_rw_1, H0,W0 = corr_volume.shape
+    #     grid = torch.stack(
+    #             torch.meshgrid(
+    #                 torch.linspace((-rw+1)/W0, (rw-1)/W0, two_rw_1), 
+    #                 torch.linspace((-rh+1)/H0, (rh-1)/H0, two_rh_1), 
+    #                 indexing = "xy"), 
+    #             dim = -1).float().to(corr_volume).reshape(two_rh_1*two_rw_1, 2)
+
+    #     grid_abs = torch.stack(
+    #             torch.meshgrid(
+    #                 torch.linspace(-1+1/W0,1-1/W0, W0), 
+    #                 torch.linspace(-1+1/H0,1-1/H0, H0), 
+    #                 indexing = "xy"), 
+    #             dim = -1).float().to(corr_volume).reshape(1,H0,W0, 2)
+
+    #     corr_volume = corr_volume.reshape(B, two_rh_1*two_rw_1, H0,W0)
+    #     P = (corr_volume == corr_volume.max(dim=1, keepdim=True)[0]).to(dtype=torch.float32)
+    #     P = P.permute(0,2,3,1) 
+    #     pos_embeddings = torch.matmul(P, grid)
+
+    #     pos_embeddings += grid_abs
+    #     pos_embeddings = pos_embeddings.permute(0,3,1,2)
+    #     return pos_embeddings
+
     @torch.inference_mode()
     def forward_fine_matcher(self, feat0, feat1, warp, to_normalized):
         feat1_warped = F.grid_sample(feat1, warp.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
@@ -525,9 +622,9 @@ class TinyRoma(nn.Module):
             feats_x0_f, feats_x0_c = self.forward_single(im0)
             feats_x1_f, feats_x1_c = self.forward_single(im1)
 
-        corr_volume = self.corr_volume_export(feats_x0_c, feats_x1_c)
+        corr_volume = self.corr_volume_exportH(feats_x0_c, feats_x1_c)
         
-        coarse_warp = self.pos_embed_export(corr_volume)
+        coarse_warp = self.pos_embed_exportH(corr_volume)
         
         coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
         
@@ -556,3 +653,57 @@ class TinyRoma(nn.Module):
         # corresps[8] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
 
         return fine_matches
+
+
+class TinyRomaV2_1(TinyRoma):
+    def forward(self, batch):
+        """
+            input:
+                x -> torch.Tensor(B, C, H, W) grayscale or rgb images
+            return:
+
+        """
+        im0 = batch["im_A"]
+        im1 = batch["im_B"]
+        corresps = {}
+        im0, rh0, rw0 = self.preprocess_tensor(im0)
+        im1, rh1, rw1 = self.preprocess_tensor(im1)
+        B, C, H0, W0 = im0.shape
+        B, C, H1, W1 = im1.shape
+        to_normalized = torch.tensor((2/W1, 2/H1, 1)).to(im0.device)[None,:,None,None]
+ 
+        if im0.shape[-2:] == im1.shape[-2:]:
+            x = torch.cat([im0, im1], dim=0)
+            x = self.forward_single(x)
+            feats_x0_c, feats_x1_c = x[1].chunk(2)
+            feats_x0_f, feats_x1_f = x[0].chunk(2)
+        else:
+            feats_x0_f, feats_x0_c = self.forward_single(im0)
+            feats_x1_f, feats_x1_c = self.forward_single(im1)
+        corr_volume = self.corr_volume(feats_x0_c, feats_x1_c)
+        coarse_warp = self.pos_embed(corr_volume)
+        coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
+        feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        coarse_matches_delta = self.coarse_matcher(torch.cat((feats_x0_c, feats_x1_c_warped, coarse_warp), dim=1))
+        coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
+        corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
+
+     
+
+        feats_x1_f = self.avgpool(feats_x1_f)
+        feats_x0_f = self.avgpool(feats_x0_f)
+        N,C,H,W = feats_x1_f.shape
+        feats_x1_f = torch.cat([feats_x1_f, feats_x1_f, feats_x1_f],1)[:,0:64]
+
+        coarse_detach = coarse_matches.detach()
+        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        feats_x1_f_warped = feats_x1_f_warped[:,0:24]
+        feats_x1_f_warped = self.upconv4(feats_x1_f_warped)
+        feats_x0_f = self.upconv4(feats_x0_f)
+        coarse_matches_up = self.upconv3(coarse_matches)
+        coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
+        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
+        fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
+
+        corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
+        return corresps

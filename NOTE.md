@@ -1,3 +1,37 @@
+## 最新状态  
+
+### 2.1  
+调整 fine matcher 设计  
+模型：experiments/model_tiny2.py  TinyRomaV2_1  
+checkpoint: workspace/checkpoints-2024-12-31_17:44:17  
+
+### 2.0  
+记录日期：2024-12-31
+模型：experiments/model_tiny2.py  
+checkpoint： workspace/checkpoints-2024-12-30_18:54:08  
+input size: 640x320  
+
+只做水平方向匹配耗时：  
+min =  11.231 ms   max =  11.354 ms   avg =  11.236 ms  median =  11.236 ms  
+   5% =  11.232 ms   90% =  11.238 ms   95% =  11.239 ms     99% =  11.252 ms  
+
+垂直方向做小范围匹配：  
+min =  20.954 ms   max =  21.179 ms   avg =  20.963 ms  median =  20.963 ms  
+   5% =  20.956 ms   90% =  20.965 ms   95% =  20.969 ms     99% =  20.994 ms  
+
+#### 改进点：  
+* 使用BN替代IN  
+* 使用convtranspose 替换 interpolate  
+* `corr_volume`和`pos_embed` ，垂直方向假设像素差为0，或只做小范围匹配  
+* fine matcher grid_sample 输入缩小一半，输出放大进入 fine matcher conv 网络  
+
+#### eval 精度  
+workspace/checkpoints-2024-12-30_18:54:08/train_ddp_tiny_roma_v1_outdoor1299584.pth
+coarse matcher:  
+auc: [np.float64(0.4471410581234331), np.float64(0.5913494153395628), np.float64(0.7057858797121987)]
+fine matcher:
+auc 为 0， fine matcher的设计有问题
+
 ## 模型精度
 * 官方tiny模型点数： 
 auc: [np.float64(0.5608852384959422), np.float64(0.6909296757113073), np.float64(0.7893704635472326)]
