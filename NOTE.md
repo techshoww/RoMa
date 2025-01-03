@@ -3,7 +3,7 @@
 ### 2.2 
 TinyRomaV2_2  
 fine matcher 中使用 interpolate替代avgpool 和 convtranspose（这里的interpolate导出又不报错了，很奇怪） 
-可以导出，还未训练
+checkpoint: workspace/checkpoints-2025-01-03_16:06:06
 
 ### 2.1  
 调整 fine matcher 设计  
