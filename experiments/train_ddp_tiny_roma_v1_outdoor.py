@@ -25,7 +25,7 @@ from romatch.losses.robust_loss_tiny_roma import RobustLosses
 from romatch.benchmarks import MegaDepthPoseEstimationBenchmark, MegadepthDenseBenchmark, HpatchesHomogBenchmark
 from romatch.train.train import train_k_steps
 from romatch.checkpointing import CheckPoint
-from model_tiny2 import TinyRoma
+from model_tiny2 import TinyRomaV2_1 as  TinyRoma
 
 resolutions = {"low":(448, 448), "medium":(14*8*5, 14*8*5), "high":(14*8*6, 14*8*6), "xfeat": (600,800), "big": (768, 1024)}
 
@@ -65,7 +65,12 @@ def train(args):
     # 使用strftime将datetime对象格式化为字符串
     formatted_time = current_time.strftime('%Y-%m-%d_%H:%M:%S')
 
-    checkpoint_dir = f"workspace/checkpoints-{formatted_time}/"
+    if not args.checkpoint_dir:
+        checkpoint_dir = f"workspace/checkpoints-{formatted_time}/"
+        # checkpoint_dir = "workspace/checkpoints-2024-12-31_17:44:17/"
+    else:
+        checkpoint_dir = args.checkpoint_dir
+
     h,w = resolutions[resolution]
     model = TinyRoma(freeze_xfeat = False).to(device_id)
     # Num steps
@@ -103,9 +108,20 @@ def train(args):
         c = 1e-4,
         epe_mask_prob_th = 0.001,
         )
-    parameters = [
-        {"params": model.parameters(), "lr": romatch.STEP_SIZE * 1e-4 / 8},
+
+    if args.checkpoint:
+        model.load_state_dict(torch.load(args.checkpoint,  map_location=model.device)['model'])
+        print(f"Load checkpoint {args.checkpoint}")
+    if args.train_fine_matcher:
+        model.train_fine_matcher()
+        parameters = [
+        {"params": [p for p in model.parameters() if p.requires_grad ], "lr": romatch.STEP_SIZE * 1e-4 / 8},
     ]
+    else:
+        parameters = [
+            {"params": model.parameters(), "lr": romatch.STEP_SIZE * 1e-4 / 8},
+        ]
+
     optimizer = torch.optim.AdamW(parameters, weight_decay=0.01)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, milestones=[(9*N/romatch.STEP_SIZE)//10])
@@ -114,6 +130,10 @@ def train(args):
 
     checkpointer = CheckPoint(checkpoint_dir, experiment_name)
     model, optimizer, lr_scheduler, global_step = checkpointer.load(model, optimizer, lr_scheduler, global_step)
+
+    if args.resume:
+        model, optimizer, lr_scheduler, global_step = checkpointer.resume(args.resume, model, optimizer, lr_scheduler, global_step)
+        
     romatch.GLOBAL_STEP = global_step
     ddp_model = DDP(model, device_ids=[device_id], find_unused_parameters = True, gradient_as_bucket_view=True)
     grad_scaler = torch.cuda.amp.GradScaler(growth_interval=1_000_000)
@@ -217,6 +237,10 @@ if __name__ == "__main__":
     parser.add_argument("--train_resolution", default='medium')
     parser.add_argument("--gpu_batch_size", default=8, type=int)
     parser.add_argument("--wandb_entity", required = False)
+    parser.add_argument("--resume", default=None, type=str)
+    parser.add_argument("--checkpoint_dir", default=None, type=str)
+    parser.add_argument("--checkpoint", default=None, type=str)
+    parser.add_argument("--train_fine_matcher", action='store_true')
 
     args, _ = parser.parse_known_args()
     romatch.DEBUG_MODE = args.debug_mode

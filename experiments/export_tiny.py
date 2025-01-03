@@ -9,7 +9,7 @@ import numpy as np
 
 # from model_tiny1 import  TinyRoMaExportH1 as TinyRoMaExport
 
-from model_tiny2 import   TinyRoma
+from model_tiny2 import   TinyRomaV2_2  as TinyRoma
 
 from thop import profile,clever_format
 
@@ -66,14 +66,9 @@ if torch.backends.mps.is_available():
 if __name__ == "__main__":
     from argparse import ArgumentParser
     parser = ArgumentParser()
-    # parser.add_argument("--im_A_path", default="assets/sacre_coeur_A.jpg", type=str)
-    # parser.add_argument("--im_B_path", default="assets/sacre_coeur_B.jpg", type=str)
-    # parser.add_argument("--save_A_path", default="demo/tiny_roma_warp_A.jpg", type=str)
-    # parser.add_argument("--save_B_path", default="demo/tiny_roma_warp_B.jpg", type=str)
 
     args, _ = parser.parse_known_args()
-    # im1_path = args.im_A_path
-    # im2_path = args.im_B_path
+
     os.makedirs("onnx",exist_ok=True, mode=0o777)
 
     # Create model
@@ -91,34 +86,6 @@ if __name__ == "__main__":
     x1 = torch.rand((1,3,height,width)).to(device)
     x2 = torch.rand((1,3,height,width)).to(device)
 
-    
-    # H1 = height//8
-    # W1 = width//8
-    # H0 = H1 
-    # W0 = W1
-    # down = 4
-    # grid = torch.stack(
-    #             torch.meshgrid(
-    #                 torch.linspace(-1+1/W1,1-1/W1, W1), 
-    #                 torch.linspace(-1+1/H1,1-1/H1, H1), 
-    #                 indexing = "xy"), 
-    #             dim = -1).float().reshape(H1*W1, 2).to(device)
-
-    # gridx = torch.linspace(-1+1/W1,1-1/W1, W1).float().to(device)
-    # gridy = torch.stack(
-    #         torch.meshgrid(
-    #             torch.linspace(-1+1/W0,1-1/W0, W0), 
-    #             torch.linspace(-1+1/H1,1-1/H1, H1), 
-    #             indexing = "xy"), 
-    #         dim = -1).float().to(device).reshape(H1*W0, 2)[:,1]
-    # print("gridy",gridy.shape)
-
-    # to_normalized = torch.tensor((2/width, 2/height, 1)).to(device)[None,:,None,None]
-
-    # input = (x1,x2, gridx, gridy, to_normalized)
-    # input_names=["x1","x2", "gridx", "gridy", "to_normalized"]
-    # input = (x1,x2, grid, to_normalized)
-    # input_names=["x1","x2", "grid", "to_normalized"]
     input = (x1,x2)
     input_names=["x1","x2"]
 

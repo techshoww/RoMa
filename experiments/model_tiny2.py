@@ -656,6 +656,33 @@ class TinyRoma(nn.Module):
 
 
 class TinyRomaV2_1(TinyRoma):
+    def __init__(self, xfeat = None, 
+                 freeze_xfeat = True, 
+                 sample_mode = "threshold_balanced", 
+                 symmetric = False, 
+                 exact_softmax = False,
+                 radius=4):
+        super().__init__(xfeat=xfeat, freeze_xfeat=freeze_xfeat, sample_mode=sample_mode, symmetric=symmetric, exact_softmax=exact_softmax, radius=radius)
+
+        self.forward_fine_matcher=False
+
+    def freeze_stage1(self):
+        for name, param in self.named_parameters():
+            if "upconv4" in name:
+                param.requires_grad = True 
+            elif "upconv3" in name:
+                param.requires_grad = True 
+            elif "fine_matcher" in name:
+                param.requires_grad = True 
+            else:
+                param.requires_grad = False
+
+            print(f"{name} requires_grad {param.requires_grad}")
+            
+    def train_fine_matcher(self):
+        self.freeze_stage1()
+        self.forward_fine_matcher = True
+
     def forward(self, batch):
         """
             input:
@@ -686,24 +713,86 @@ class TinyRomaV2_1(TinyRoma):
         feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
         coarse_matches_delta = self.coarse_matcher(torch.cat((feats_x0_c, feats_x1_c_warped, coarse_warp), dim=1))
         coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
-        corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
-
-     
+            
+        if self.training:
+            if not self.forward_fine_matcher:
+                corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
+                return corresps
+        else:
+            corresps[8] = {"flow": coarse_matches[:,:2], "certainty": coarse_matches[:,2:]}
 
         feats_x1_f = self.avgpool(feats_x1_f)
         feats_x0_f = self.avgpool(feats_x0_f)
         N,C,H,W = feats_x1_f.shape
         feats_x1_f = torch.cat([feats_x1_f, feats_x1_f, feats_x1_f],1)[:,0:64]
 
-        coarse_detach = coarse_matches.detach()
-        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        # coarse_detach = coarse_matches.detach()
+        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
         feats_x1_f_warped = feats_x1_f_warped[:,0:24]
         feats_x1_f_warped = self.upconv4(feats_x1_f_warped)
         feats_x0_f = self.upconv4(feats_x0_f)
         coarse_matches_up = self.upconv3(coarse_matches)
-        coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
-        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
-        fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
+        # coarse_matches_up_detach = coarse_matches_up.detach()#note the detach
+        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up[:,:2]), dim=1))
+        fine_matches = coarse_matches_up+fine_matches_delta * to_normalized
 
         corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
         return corresps
+
+class TinyRomaV2_2(TinyRoma):
+    @torch.inference_mode()
+    def forward_export(self, im0, im1):
+        """
+            input:
+                x -> torch.Tensor(B, C, H, W) grayscale or rgb images
+            return:
+
+        """
+        
+        corresps = {}
+        B, C, H0, W0 = im0.shape
+        B, C, H1, W1 = im1.shape
+        to_normalized = torch.tensor((2/W1, 2/H1, 1)).to(im0.device)[None,:,None,None]
+        
+
+        # if im0.shape[-2:] == im1.shape[-2:]:
+        if False:
+            x = torch.cat([im0, im1], dim=0)
+            x = self.forward_single(x)
+            feats_x0_c, feats_x1_c = x[1].chunk(2)
+            feats_x0_f, feats_x1_f = x[0].chunk(2)
+        else:
+            feats_x0_f, feats_x0_c = self.forward_single(im0)
+            feats_x1_f, feats_x1_c = self.forward_single(im1)
+
+        corr_volume = self.corr_volume_exportH(feats_x0_c, feats_x1_c)
+        
+        coarse_warp = self.pos_embed_exportH(corr_volume)
+        
+        coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
+        
+        feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        print("feats_x0_c",feats_x0_c.shape)
+        print("feats_x1_c_warped",feats_x1_c_warped.shape)
+        coarse_matches_delta = self.coarse_matcher(torch.cat((feats_x0_c, feats_x1_c_warped, coarse_warp), dim=1))
+        coarse_matches = coarse_matches + coarse_matches_delta * to_normalized
+
+        N,C,H,W = feats_x1_c.shape
+        feats_x1_f = F.interpolate(feats_x1_f, size=feats_x1_c.shape[-2:], mode = "bilinear", align_corners = False)
+        feats_x0_f = F.interpolate(feats_x0_f, size=feats_x1_c.shape[-2:], mode = "bilinear", align_corners = False)
+        N,C,H,W = feats_x1_f.shape
+        feats_x1_f = torch.cat([feats_x1_f, feats_x1_f, feats_x1_f],1)[:,0:64]
+
+        coarse_detach = coarse_matches.detach()
+        feats_x1_f_warped = F.grid_sample(feats_x1_f, coarse_detach.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)
+        feats_x1_f_warped = feats_x1_f_warped[:,0:24]
+        feats_x1_f_warped = F.interpolate(feats_x1_f_warped, size=(H*2,W*2), mode = 'bilinear', align_corners = False)
+        feats_x0_f = F.interpolate(feats_x0_f, size=(H*2,W*2), mode = 'bilinear', align_corners = False)
+
+
+        coarse_matches_up_detach = F.interpolate(coarse_detach, size = feats_x0_f.shape[-2:], mode = "bilinear", align_corners = False) 
+        fine_matches_delta = self.fine_matcher(torch.cat((feats_x0_f, feats_x1_f_warped, coarse_matches_up_detach[:,:2]), dim=1))
+        fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
+
+        
+        return fine_matches

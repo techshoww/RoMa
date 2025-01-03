@@ -58,4 +58,34 @@ class CheckPoint:
             del states
             gc.collect()
             torch.cuda.empty_cache()
+        elif romatch.RANK == 0:
+            print(f'{os.path.exists(self.dir + self.name + f"_latest.pth")} not exists')
+        return model, optimizer, lr_scheduler, n
+    
+    def resume(
+        self,
+        path,
+        model,
+        optimizer,
+        lr_scheduler,
+        n,
+        ):
+        if  romatch.RANK == 0:
+            states = torch.load(path)
+            if "model" in states:
+                model.load_state_dict(states["model"])
+            if "n" in states:
+                n = states["n"] if states["n"] else n
+            if "optimizer" in states:
+                try:
+                    optimizer.load_state_dict(states["optimizer"])
+                except Exception as e:
+                    print(f"Failed to load states for optimizer, with error {e}")
+            if "lr_scheduler" in states:
+                lr_scheduler.load_state_dict(states["lr_scheduler"])
+            print(f"Loaded states {list(states.keys())}, at step {n}")
+            del states
+            gc.collect()
+            torch.cuda.empty_cache()
+        
         return model, optimizer, lr_scheduler, n

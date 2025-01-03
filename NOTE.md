@@ -1,9 +1,19 @@
 ## 最新状态  
 
+### 2.2 
+TinyRomaV2_2  
+fine matcher 中使用 interpolate替代avgpool 和 convtranspose（这里的interpolate导出又不报错了，很奇怪） 
+可以导出，还未训练
+
 ### 2.1  
 调整 fine matcher 设计  
 模型：experiments/model_tiny2.py  TinyRomaV2_1  
-checkpoint: workspace/checkpoints-2024-12-31_17:44:17  
+checkpoint: workspace/checkpoints-2024-12-31_17:44:17/train_ddp_tiny_roma_v1_outdoor2023704.pth  
+coarse matcher:
+auc: [np.float64(0.45396284168566214), np.float64(0.5969612644287552), np.float64(0.7150982195493337)]  
+
+fine matcher:
+精度训不上来，比较低，应该是设计的有问题。
 
 ### 2.0  
 记录日期：2024-12-31
